@@ -63,7 +63,7 @@ def main() -> None:
     # 2. Rigorous validation
     logger.info("=== 2. Rigorous validation ===")
     from src.rigorous_validation import rigorous_validation
-    rigorous_validation(str(raw_path), str(initial_path))
+    rigorous_validation(str(raw_path), str(initial_path), str(output_dir))
 
     if not args.fast:
         # 3. Benchmarks

@@ -4,6 +4,7 @@ to confirm reported 100% accuracy is not due to leakage.
 """
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -31,6 +32,59 @@ except ImportError:
     ]
 
 logger = logging.getLogger(__name__)
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def write_loso_restricted_summary(repo_root: Path, output_dir: Path) -> None:
+    """Summarize LOSO from loso_per_study.csv (filtered by min formulations); write loso_restricted_summary.csv."""
+    loso_csv = repo_root / "loso_per_study.csv"
+    if not loso_csv.is_file():
+        return
+    out_csv = output_dir / "loso_restricted_summary.csv"
+    logger.info("LOSO restricted summary: loading %s", loso_csv)
+    df = pd.read_csv(loso_csv)
+    df["DOI"] = df["DOI"].astype(str).str.strip()
+    logger.info("Rows loaded: %d", len(df))
+    targets = ["Peppas_n", "Peppas_K", "Burst_24h"]
+    filters = [
+        ("All studies", 0),
+        ("Studies with >= 3 formulations", 3),
+        ("Studies with >= 5 formulations", 5),
+    ]
+    rows = []
+    for target in targets:
+        df_t = df[df["Target"] == target].copy()
+        df_t["R2_clean"] = df_t["R2"].apply(lambda x: x if abs(x) < 100 else np.nan)
+        for filter_label, min_forms in filters:
+            sub = df_t[df_t["N_formulations"] >= max(min_forms, 1)].copy()
+            n_studies = len(sub)
+            n_forms = int(sub["N_formulations"].sum())
+            if n_forms > 0:
+                pooled_mae = float(np.average(sub["MAE"], weights=sub["N_formulations"]))
+            else:
+                pooled_mae = np.nan
+            pooled_r2 = float(sub["R2_clean"].mean()) if n_studies > 0 else np.nan
+            median_mae = float(sub["MAE"].median()) if n_studies > 0 else np.nan
+            rows.append({
+                "Target": target,
+                "Filter": filter_label,
+                "Min_Formulations": min_forms if min_forms > 0 else 1,
+                "N_Studies": n_studies,
+                "N_Formulations": n_forms,
+                "Pooled_R2_approx": round(pooled_r2, 4) if not np.isnan(pooled_r2) else "NA",
+                "Pooled_MAE": round(pooled_mae, 4) if not np.isnan(pooled_mae) else "NA",
+                "Median_Study_MAE": round(median_mae, 4) if not np.isnan(median_mae) else "NA",
+                "Note": (
+                    "Pooled R2 excludes per-study values |R2| > 100 (numerical artifacts from "
+                    "single-formulation held-out studies). Summarized from loso_per_study.csv."
+                ),
+            })
+            logger.info("%s | %s — N_studies=%d N_forms=%d R2~=%.4f MAE=%.4f median_MAE=%.4f",
+                        target, filter_label, n_studies, n_forms, pooled_r2, pooled_mae, median_mae)
+    out_df = pd.DataFrame(rows)
+    out_df.to_csv(out_csv, index=False)
+    logger.info("Saved %s", out_csv)
 
 
 def rigorous_validation(raw_path: str, initial_path: str, output_dir: Optional[str] = None) -> None:
@@ -185,6 +239,17 @@ def rigorous_validation(raw_path: str, initial_path: str, output_dir: Optional[s
     except Exception as e:
         logger.exception("AD Analysis Failed: %s", e)
 
+    if output_dir:
+        out_dir = Path(output_dir)
+    else:
+        try:
+            import config as _cfg
+            out_dir = _cfg.OUTPUT_DIR
+        except ImportError:
+            out_dir = REPO_ROOT / "outputs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    write_loso_restricted_summary(REPO_ROOT, out_dir)
+
 
 if __name__ == "__main__":
     import config as _cfg
@@ -192,4 +257,4 @@ if __name__ == "__main__":
     initial = _cfg.DATA_DIR / _cfg.INITIAL_DATASET
     if not raw.exists() or not initial.exists():
         raise FileNotFoundError("Place mp_dataset_processed.xlsx and mp_dataset_initial.xlsx in data/")
-    rigorous_validation(str(raw), str(initial), str(_cfg.OUTPUT_DIR))
+    rigorous_validation(str(raw), str(initial), str(_cfg.OUTPUT_DIR.resolve()))
